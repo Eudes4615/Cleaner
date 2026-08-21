@@ -1,17 +1,24 @@
-
----
-
-### `build.spec`
-
-```python
 # -*- mode: python ; coding: utf-8 -*-
 from pathlib import Path
-root = Path(__file__).parent
+
+
+root = Path(__file__).resolve().parent
 block_cipher = None
-datas = [(str(root / "resources"), "resources")]
-hiddenimports = ['PyQt6', 'PyQt6.QtCore', 'PyQt6.QtGui', 'PyQt6.QtWidgets']
+
+datas = []
+resources = root / "resources"
+if resources.exists():
+    datas.append((str(resources), "resources"))
+
+hiddenimports = [
+    "PyQt6",
+    "PyQt6.QtCore",
+    "PyQt6.QtGui",
+    "PyQt6.QtWidgets",
+]
+
 a = Analysis(
-    ['app/main.py'],
+    [str(root / "app" / "main.py")],
     pathex=[str(root)],
     binaries=[],
     datas=datas,
@@ -20,12 +27,11 @@ a = Analysis(
     hooksconfig={},
     runtime_hooks=[],
     excludes=[],
-    win_no_prefer_redirects=False,
-    win_private_assemblies=False,
-    cipher=block_cipher,
     noarchive=False,
 )
+
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
+
 exe = EXE(
     pyz,
     a.scripts,
@@ -33,7 +39,7 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name='NeuralStorageAnalyzer',
+    name="NeuralStorageAnalyzer",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -44,6 +50,5 @@ exe = EXE(
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
-    cofile=None,
-    icon=str(root / 'resources' / 'icon.ico') if (root / 'resources' / 'icon.ico').exists() else None,
+    icon=str(resources / "icon.ico") if (resources / "icon.ico").exists() else None,
 )

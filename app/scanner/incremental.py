@@ -2,71 +2,75 @@ import os
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Set
+
 from ..storage.cache import StorageCache
 
+
 class IncrementalScanner:
-    """Scan incrémental : ne scanne que les fichiers modifiés depuis le dernier scan"""
-    
+    """Sélectionne uniquement les fichiers nouveaux ou modifiés."""
+
     def __init__(self):
         self.cache = StorageCache()
         self.last_scan_time: Optional[datetime] = None
         self.scanned_files: Set[str] = set()
-    
+
     def load_previous_scan(self):
-        """Charge les infos du dernier scan depuis le cache"""
+        """Charge la date du dernier scan depuis le cache."""
         result = self.cache.get_last_scan_metadata()
-        if result:
-            self.last_scan_time = datetime.fromisoformat(result)
-    
-    def get_files_to_scan(self, directory: str) -> List[str]:
-        """Retourne la liste des fichiers à scanner (modifiés ou nouveaux)"""
-        self.load_previous_scan()
-        
-        files_to_scan = []
-        total_files = 0
-        
+        if not result:
+            self.last_scan_time = None
+            return
         try:
-            for root, _, files in os.walk(directory):
-                for name in files:
-                    total_files += 1
-                    path = os.path.join(root, name)
-                    
-                    try:
-                        mtime = os.path.getmtime(path)
-                        mod_time = datetime.fromtimestamp(mtime)
-                        
-                        # Si pas de précédent scan, tout scanner
-                        if self.last_scan_time is None:
-                            files_to_scan.append(path)
-                        # Sinon, ne scanner que les fichiers modifiés
-                        elif mod_time > self.last_scan_time:
-                            files_to_scan.append(path)
-                        # Sinon, on prend depuis le cache
-                        else:
-                            self.scanned_files.add(path)
-                            
-                    except (PermissionError, OSError):
-                        continue
-                        
-        except PermissionError:
-            pass
-        
+            self.last_scan_time = datetime.fromisoformat(result)
+        except ValueError:
+            self.last_scan_time = None
+
+    def get_files_to_scan(self, directory: str) -> List[str]:
+        """Retourne les fichiers nouveaux ou modifiés depuis le dernier scan."""
+        self.load_previous_scan()
+        self.scanned_files.clear()
+
+        files_to_scan = []
+        root_path = Path(directory).expanduser()
+        if not root_path.exists():
+            return files_to_scan
+
+        candidates = [root_path] if root_path.is_file() else (
+            Path(root) / name
+            for root, _, names in os.walk(root_path)
+            for name in names
+        )
+
+        for path in candidates:
+            try:
+                if not path.is_file():
+                    continue
+                modified = datetime.fromtimestamp(path.stat().st_mtime)
+                if self.last_scan_time is None or modified > self.last_scan_time:
+                    files_to_scan.append(str(path))
+                else:
+                    self.scanned_files.add(str(path))
+            except (PermissionError, OSError, FileNotFoundError):
+                continue
+
         return files_to_scan
-    
+
     def get_cached_file_info(self, path: str):
-        """Récupère les infos d'un fichier depuis le cache"""
+        """Récupère les informations d’un fichier depuis le cache."""
         return self.cache.get_file_info(path)
-    
+
     def mark_scan_complete(self, files: List):
-        """Marque la fin du scan et met à jour le cache"""
-        from ..core.models import FileInfo
+        """Persiste les fichiers analysés et clôture le cycle de cache."""
         self.cache.save_files(files)
-        
+        self.load_previous_scan()
+
     def get_scan_stats(self) -> dict:
-        """Retourne des stats sur le scan incrémental"""
-        cached_count = len(self.scanned_files)
+        """Retourne les statistiques du dernier passage incrémental."""
         return {
-            "cached_files": cached_count,
+            "cached_files": len(self.scanned_files),
             "last_scan": self.last_scan_time.isoformat() if self.last_scan_time else None,
-            "cache_db_path": str(self.cache.DB_PATH)
+            "cache_db_path": str(self.cache.DB_PATH),
         }
+
+    def close(self):
+        self.cache.close()

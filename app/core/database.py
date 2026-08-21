@@ -1,15 +1,16 @@
 import sqlite3
 import threading
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator
 
 
 class Database:
     """
-    SQLite core layer (PURE repository backend foundation)
-    - Singleton
-    - Thread-safe
-    - WAL mode
-    - No business logic
+    Backend SQLite centralisé.
+
+    La connexion est partagée par les repositories, protégée par un verrou
+    réentrant et configurée pour fonctionner avec les workers de scan Qt.
     """
 
     _instance = None
@@ -25,32 +26,26 @@ class Database:
                     cls._instance._init()
         return cls._instance
 
-    # -------------------------
-    # INIT
-    # -------------------------
     def _init(self):
         self._lock = threading.RLock()
-
+        self._transaction_depth = 0
         self.conn = sqlite3.connect(
             str(self.DB_PATH),
             check_same_thread=False,
-            timeout=30
+            timeout=30,
         )
 
-        self.conn.execute("PRAGMA journal_mode=WAL")
-        self.conn.execute("PRAGMA synchronous=NORMAL")
-        self.conn.execute("PRAGMA temp_store=MEMORY")
+        self.conn.execute("PRAGMA foreign_keys = ON")
+        self.conn.execute("PRAGMA journal_mode = WAL")
+        self.conn.execute("PRAGMA synchronous = NORMAL")
+        self.conn.execute("PRAGMA temp_store = MEMORY")
 
         self._create_tables()
 
-    # -------------------------
-    # TABLES
-    # -------------------------
     def _create_tables(self):
         with self._lock:
             cur = self.conn.cursor()
 
-            # SCANS
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS scans (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -58,11 +53,11 @@ class Database:
                     total_files INTEGER DEFAULT 0,
                     total_size_mb REAL DEFAULT 0,
                     duration_sec REAL DEFAULT 0,
-                    scan_type TEXT
+                    scan_type TEXT,
+                    status TEXT NOT NULL DEFAULT 'finished'
                 )
             """)
 
-            # FILES
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS files (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -81,11 +76,10 @@ class Database:
                     is_duplicate INTEGER DEFAULT 0,
                     duplicate_of TEXT,
                     last_seen TEXT,
-                    FOREIGN KEY(scan_id) REFERENCES scans(id)
+                    FOREIGN KEY(scan_id) REFERENCES scans(id) ON DELETE CASCADE
                 )
             """)
 
-            # ACTIONS (rollback)
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS actions (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -97,56 +91,62 @@ class Database:
                 )
             """)
 
-            # INDEXES (performance critique)
             cur.execute("CREATE INDEX IF NOT EXISTS idx_files_scan ON files(scan_id)")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_files_hash ON files(sha256)")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_files_fingerprint ON files(fingerprint)")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_files_size ON files(size_mb)")
 
+            # Migration additive pour les bases créées par une version antérieure.
+            self._ensure_column("scans", "status", "TEXT NOT NULL DEFAULT 'finished'")
             self.conn.commit()
 
-    # -------------------------
-    # SAFE EXECUTION WRAPPER
-    # -------------------------
+    def _ensure_column(self, table: str, column: str, definition: str) -> None:
+        columns = {
+            row[1]
+            for row in self.conn.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        if column not in columns:
+            self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
     def execute(self, query: str, params: tuple = ()):
-        """
-        Thread-safe SQL execution (WRITE)
-        """
+        """Exécute une requête et commit automatiquement hors transaction."""
         with self._lock:
             cur = self.conn.cursor()
             cur.execute(query, params)
-            self.conn.commit()
+            if self._transaction_depth == 0:
+                self.conn.commit()
             return cur
 
     def fetchall(self, query: str, params: tuple = ()):
-        """
-        Thread-safe SQL execution (READ)
-        """
         with self._lock:
             cur = self.conn.cursor()
             cur.execute(query, params)
             return cur.fetchall()
 
     def fetchone(self, query: str, params: tuple = ()):
-        """
-        Thread-safe single fetch
-        """
         with self._lock:
             cur = self.conn.cursor()
             cur.execute(query, params)
             return cur.fetchone()
 
-    # -------------------------
-    # CONTEXT TRANSACTION (IMPORTANT)
-    # -------------------------
-    def transaction(self):
-        """
-        Usage:
-        with db.transaction():
-            db.execute(...)
-        """
-        return self.conn
+    @contextmanager
+    def transaction(self) -> Iterator[sqlite3.Connection]:
+        """Regroupe plusieurs écritures dans une transaction atomique."""
+        with self._lock:
+            self._transaction_depth += 1
+            try:
+                yield self.conn
+            except Exception:
+                self.conn.rollback()
+                raise
+            else:
+                if self._transaction_depth == 1:
+                    self.conn.commit()
+            finally:
+                self._transaction_depth -= 1
 
     def close(self):
         with self._lock:
+            self.conn.commit()
             self.conn.close()
+            type(self)._instance = None
