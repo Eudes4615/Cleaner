@@ -56,7 +56,7 @@ class ClassifierEngine:
                 lambda p, s: p.suffix.lower() in {'.pdf', '.docx', '.txt', '.csv'}),
 
             ClassificationRule("system", FileCategory.SYSTEM,
-                lambda p, s: 'windows' in p.parts or 'system32' in p.parts),
+                lambda p, s: any(part.lower() in {"windows", "system32"} for part in p.parts)),
         ]
 
     @classmethod
