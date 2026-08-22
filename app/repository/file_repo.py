@@ -21,6 +21,7 @@ class FileRecord:
     duplicate_of: str
     scan_id: int
     last_seen: str
+    id: Optional[int] = None
 
 class FileRepository:
     def __init__(self):
@@ -211,16 +212,33 @@ class FileRepository:
     def _to_records_with_id(self, rows) -> List[FileRecord]:
         records = []
         for r in rows:
-            # r[0] = id
-            records.append(FileRecord(
-                id=r[0],
+            record = FileRecord(
                 path=r[1], size_mb=r[2], modified=r[3], created=r[4],
                 accessed=r[5], extension=r[6], category=self._to_category(r[7]),
                 score=r[8], importance=self._to_importance(r[9]), fingerprint=r[10],
                 sha256=r[11], is_duplicate=r[12], duplicate_of=r[13],
-                scan_id=r[14], last_seen=r[15]
-            ))
-        return records 
+                scan_id=r[14], last_seen=r[15], id=r[0]
+            )
+            records.append(record)
+        return records
+
+    @staticmethod
+    def _to_category(value) -> FileCategory:
+        try:
+            return value if isinstance(value, FileCategory) else FileCategory(value)
+        except (ValueError, TypeError):
+            return FileCategory.OTHER
+
+    @staticmethod
+    def _to_importance(value) -> Importance:
+        try:
+            if isinstance(value, Importance):
+                return value
+            if isinstance(value, str):
+                return Importance[value]
+            return Importance(value)
+        except (ValueError, KeyError, TypeError):
+            return Importance.MEDIUM
 
     def find_by_path(self, scan_id: int, path: str) -> Optional[FileRecord]:
         rows = self.db.fetchall("""

@@ -36,17 +36,35 @@ class ScannerEngine:
         total = 0
 
         for base in paths:
-            if not os.path.exists(base):
+            base_path = Path(base).expanduser()
+            if not base_path.exists():
                 continue
 
-            for root, dirs, files in os.walk(base):
+            # Permettre l’analyse d’un fichier isolé, utile pour les tests
+            # et pour les sélections provenant d’une future boîte de dialogue.
+            if base_path.is_file():
+                candidates = [(base_path.parent, [], [base_path.name])]
+            else:
+                candidates = os.walk(
+                    str(base_path),
+                    topdown=True,
+                    onerror=lambda _error: None,
+                )
+
+            for root, dirs, files in candidates:
                 root_path = Path(root)
 
                 if cls._is_excluded(root_path):
                     dirs[:] = []
                     continue
 
+                dirs[:] = [
+                    directory for directory in dirs
+                    if not cls._is_excluded(root_path / directory)
+                ]
+
                 for name in files:
+
                     if stop_flag and stop_flag():
                         return total
 

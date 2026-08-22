@@ -32,13 +32,27 @@ class ScanService(QObject):
         if self.context and self.context.is_running:
             self.error.emit("Un scan est déjà en cours.")
             return
+
+        valid_paths = []
+        for raw_path in paths or []:
+            if not raw_path:
+                continue
+            candidate = Path(raw_path).expanduser()
+            if candidate.exists():
+                valid_paths.append(str(candidate.resolve()))
+
+        if not valid_paths:
+            self.error.emit("Aucun chemin valide à analyser.")
+            return
+
         try:
-            self._run_scan(paths, min_size_mb, check_duplicates, scan_type)
+            self._run_scan(valid_paths, min_size_mb, check_duplicates, scan_type)
         except Exception as e:
-            self.error.emit(str(e))
+            self.error.emit(f"Échec du scan : {e}")
             if self.context:
                 self.scan_repo.cancel_scan(self.context.scan_id)
-            raise
+            # L’exception est signalée à l’interface mais ne doit pas tuer
+            # la boucle Qt lorsque le service est appelé depuis le thread GUI.
         finally:
             if self.context:
                 with self.context.lock:
@@ -78,15 +92,22 @@ class ScanService(QObject):
         # Comptage rapide
         total = 0
         for path in paths:
-            if not os.path.exists(path):
+            path_obj = Path(path)
+            if not path_obj.exists():
+                continue
+            if path_obj.is_file():
+                total += 1
                 continue
             try:
-                for root, dirs, files in os.walk(path):
+                for root, dirs, files in os.walk(path_obj):
                     root_path = Path(root)
                     if ScannerEngine._is_excluded(root_path):
                         dirs[:] = []
                         continue
-                    dirs[:] = [d for d in dirs if not ScannerEngine._is_excluded(root_path / d)]
+                    dirs[:] = [
+                        directory for directory in dirs
+                        if not ScannerEngine._is_excluded(root_path / directory)
+                    ]
                     total += len(files)
             except PermissionError:
                 continue
