@@ -1,0 +1,45 @@
+name: Cleaner CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      run_stress:
+        description: Run the concurrent stress suite
+        required: false
+        default: false
+        type: boolean
+      stress_iterations:
+        description: Number of stress cases
+        required: false
+        default: '100'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Compile and smoke tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install lightweight CI dependencies
+        run: python -m pip install --upgrade pip psutil send2trash
+      - name: Compile Python sources
+        run: python -m compileall -q .
+      - name: Run smoke tests
+        run: PYTHONPATH=. python ci/smoke_tests.py
+      - name: Run optional stress tests
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_stress }}
+        env:
+          STRESS_ITERATIONS: ${{ inputs.stress_iterations }}
+          STRESS_WORKERS: '4'
+        run: PYTHONPATH=. python ci/stress_tests.py
